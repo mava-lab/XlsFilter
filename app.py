@@ -4,14 +4,19 @@ import io
 
 # 设置页面配置
 st.set_page_config(page_title="表格筛选小工具", layout="wide")
-st.title("📊 表格数据筛选与合并工具 (自动加值版)")
+st.title("📊 表格数据筛选与合并工具 (Times版本)")
 
 # --- 侧边栏：设置筛选条件 ---
 st.sidebar.header("1. 设置筛选条件")
-# 提示用户这里是针对处理后的值进行筛选
-st.sidebar.info("💡 注意：筛选是基于【Amount + 10000】后的数值进行的")
-min_amount = st.sidebar.number_input("Amount (处理后) 最小值", value=0) # 默认值调大一点比较合理
-max_amount = st.sidebar.number_input("Amount (处理后) 最大值", value=999999)
+
+# Times 筛选 (支持小数)
+st.sidebar.subheader("Times (倍数) 范围")
+st.sidebar.info("计算公式: Times = (Amount + 10000) / 10000")
+min_times = st.sidebar.number_input("Times 最小值", value=0.0, step=0.1, format="%.2f")
+max_times = st.sidebar.number_input("Times 最大值", value=1000.0, step=0.1, format="%.2f")
+
+# LauncherNum 筛选 (保持不变)
+st.sidebar.subheader("LauncherNum (发射数) 范围")
 min_launcher = st.sidebar.number_input("LauncherNum 最小值", value=0)
 max_launcher = st.sidebar.number_input("LauncherNum 最大值", value=100)
 
@@ -86,29 +91,32 @@ if uploaded_files:
             df.columns = df.columns.astype(str).str.strip()
             
             if 'Amount' not in df.columns or 'LauncherNum' not in df.columns:
-                st.warning(f"⚠️ 跳过 {file.name}: 缺少必要列")
+                st.warning(f"⚠️ 跳过 {file.name}: 缺少 Amount 或 LauncherNum 列")
                 continue
             
             # -------------------------------------------------------
-            # 【关键修改】: 在筛选前，先把 Amount 加上 10000
+            # 【核心修改逻辑】: 计算 Times 列
             # -------------------------------------------------------
             try:
-                # 确保是数字类型，防止报错
+                # 确保 Amount 是数字
                 df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
-                # 执行加法
-                df['Amount'] = df['Amount'] + 10000
+                
+                # 新增一列 Times
+                # 公式: (Amount + 10000) / 10000
+                df['Times'] = (df['Amount'] + 10000) / 10000
+                
             except Exception as e:
-                st.error(f"❌ 文件 {file.name} 的 Amount 列无法进行数学运算: {e}")
+                st.error(f"❌ 文件 {file.name} 计算 Times 列时出错: {e}")
                 continue
             # -------------------------------------------------------
             
             total_original_rows += len(df)
             
-            # 3. 筛选 (此时 df['Amount'] 已经是加过的值了)
+            # 3. 筛选 (使用新的 Times 列 和 LauncherNum)
             try:
                 filtered_df = df[
-                    (df['Amount'] >= min_amount) & 
-                    (df['Amount'] <= max_amount) & 
+                    (df['Times'] >= min_times) & 
+                    (df['Times'] <= max_times) & 
                     (df['LauncherNum'] >= min_launcher) & 
                     (df['LauncherNum'] <= max_launcher)
                 ]
@@ -127,7 +135,16 @@ if uploaded_files:
         # 4. 结果展示
         if all_filtered_data:
             final_df = pd.concat(all_filtered_data, ignore_index=True)
-            st.success(f"✅ 成功！从 {success_count} 个文件中提取数据 (Amount 已全部 +10000)")
+            
+            # 为了美观，把 Times 列移到 Amount 后面 (可选操作，不影响数据)
+            cols = list(final_df.columns)
+            if 'Times' in cols and 'Amount' in cols:
+                cols.remove('Times')
+                amount_idx = cols.index('Amount')
+                cols.insert(amount_idx + 1, 'Times')
+                final_df = final_df[cols]
+
+            st.success(f"✅ 成功！从 {success_count} 个文件中筛选出数据")
             
             c1, c2 = st.columns(2)
             c1.metric("原始总行数", total_original_rows)
@@ -142,4 +159,4 @@ if uploaded_files:
                 "text/csv"
             )
         else:
-            st.warning("⚠️ 没有数据满足筛选条件。")
+            st.warning("⚠️ 没有数据满足筛选条件 (Times 和 LauncherNum 范围)。")
