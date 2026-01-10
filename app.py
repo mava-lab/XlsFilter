@@ -9,13 +9,13 @@ st.title("📊 Zuma表格数据筛选与合并工具V0110 (Times版本)")
 # --- 侧边栏：设置筛选条件 ---
 st.sidebar.header("1. 设置筛选条件")
 
-# Times 筛选 (支持小数)
+# Times 筛选
 st.sidebar.subheader("Times (倍数) 范围")
 st.sidebar.info("计算公式: Times = (Amount + 10000) / 10000")
 min_times = st.sidebar.number_input("Times 最小值", value=0.0, step=0.1, format="%.2f")
 max_times = st.sidebar.number_input("Times 最大值", value=1000.0, step=0.1, format="%.2f")
 
-# LauncherNum 筛选 (保持不变)
+# LauncherNum 筛选
 st.sidebar.subheader("LauncherNum (发射数) 范围")
 min_launcher = st.sidebar.number_input("LauncherNum 最小值", value=0)
 max_launcher = st.sidebar.number_input("LauncherNum 最大值", value=100)
@@ -28,10 +28,15 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
+# 【新增功能 1】：显示所有上传文件的清单
+if uploaded_files:
+    with st.expander(f"📦 已成功接收 {len(uploaded_files)} 个文件 (点击查看详细名单)"):
+        # 列出所有文件名
+        for f in uploaded_files:
+            st.text(f"- {f.name}")
+
 def super_reader(file):
-    """
-    全能读取函数：扫描所有Sheet，尝试所有格式
-    """
+    """全能读取函数"""
     logs = []
     file.seek(0)
     
@@ -78,7 +83,7 @@ if uploaded_files:
         status_text = st.empty()
         
         for i, file in enumerate(uploaded_files):
-            status_text.text(f"正在处理: {file.name} ...")
+            status_text.text(f"正在处理 ({i+1}/{len(uploaded_files)}): {file.name} ...")
             
             # 1. 读取
             df, read_info = super_reader(file)
@@ -94,25 +99,17 @@ if uploaded_files:
                 st.warning(f"⚠️ 跳过 {file.name}: 缺少 Amount 或 LauncherNum 列")
                 continue
             
-            # -------------------------------------------------------
-            # 【核心修改逻辑】: 计算 Times 列
-            # -------------------------------------------------------
+            # 3. 计算 Times
             try:
-                # 确保 Amount 是数字
                 df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
-                
-                # 新增一列 Times
-                # 公式: (Amount + 10000) / 10000
                 df['Times'] = (df['Amount'] + 10000) / 10000
-                
             except Exception as e:
                 st.error(f"❌ 文件 {file.name} 计算 Times 列时出错: {e}")
                 continue
-            # -------------------------------------------------------
             
             total_original_rows += len(df)
             
-            # 3. 筛选 (使用新的 Times 列 和 LauncherNum)
+            # 4. 筛选
             try:
                 filtered_df = df[
                     (df['Times'] >= min_times) & 
@@ -132,11 +129,11 @@ if uploaded_files:
             
         status_text.text("处理完成！")
         
-        # 4. 结果展示
+        # 5. 结果展示
         if all_filtered_data:
             final_df = pd.concat(all_filtered_data, ignore_index=True)
             
-            # 为了美观，把 Times 列移到 Amount 后面 (可选操作，不影响数据)
+            # 调整列顺序 (Times 放在 Amount 后面)
             cols = list(final_df.columns)
             if 'Times' in cols and 'Amount' in cols:
                 cols.remove('Times')
@@ -144,13 +141,15 @@ if uploaded_files:
                 cols.insert(amount_idx + 1, 'Times')
                 final_df = final_df[cols]
 
-            st.success(f"✅ 成功！从 {success_count} 个文件中筛选出数据")
+            st.success(f"✅ 成功！从 {success_count} 个文件中筛选出 {len(final_df)} 行数据")
             
             c1, c2 = st.columns(2)
             c1.metric("原始总行数", total_original_rows)
             c2.metric("筛选后行数", len(final_df))
             
-            st.dataframe(final_df.head(100))
+            st.subheader("结果预览")
+            # 【新增功能 2】：设置表格高度为 600 (默认大概是 300)
+            st.dataframe(final_df, height=600)
             
             st.download_button(
                 "📥 下载结果 (CSV)",
@@ -159,4 +158,4 @@ if uploaded_files:
                 "text/csv"
             )
         else:
-            st.warning("⚠️ 没有数据满足筛选条件 (Times 和 LauncherNum 范围)。")
+            st.warning("⚠️ 没有数据满足筛选条件。")
