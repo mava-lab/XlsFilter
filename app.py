@@ -10,8 +10,8 @@ st.title("📊 表格数据筛选与合并工具 (自动加值版)")
 st.sidebar.header("1. 设置筛选条件")
 # 提示用户这里是针对处理后的值进行筛选
 st.sidebar.info("💡 注意：筛选是基于【Amount + 10000】后的数值进行的")
-min_amount = st.sidebar.number_input("Amount (处理后) 最小值", value=10000) # 默认值调大一点比较合理
-max_amount = st.sidebar.number_input("Amount (处理后) 最大值", value=50000)
+min_amount = st.sidebar.number_input("Amount (处理后) 最小值", value=0) # 默认值调大一点比较合理
+max_amount = st.sidebar.number_input("Amount (处理后) 最大值", value=999999)
 min_launcher = st.sidebar.number_input("LauncherNum 最小值", value=0)
 max_launcher = st.sidebar.number_input("LauncherNum 最大值", value=100)
 
