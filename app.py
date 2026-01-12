@@ -1,13 +1,18 @@
 import streamlit as st
 import pandas as pd
 import io
-import hashlib  # 新增：用于计算 MD5
+import hashlib
 
 # ==========================================
-# 页面配置
+# 配置信息
 # ==========================================
-st.set_page_config(page_title="Zuma表格工具", layout="wide")
-st.title("📊 Zuma表格数据筛选与合并工具 (统计增强 + ID生成版)")
+APP_TITLE = "Zuma 表格筛选工具"
+APP_VERSION = "v1.3"  # 版本号更新
+BUILD_DATE = "2026-01-12"
+
+st.set_page_config(page_title=f"{APP_TITLE} {APP_VERSION}", layout="wide")
+st.title(f"📊 {APP_TITLE} (统计增强 + ID生成版)")
+st.caption(f"Version: {APP_VERSION} | Build: {BUILD_DATE}")
 
 # ==========================================
 # 1. 侧边栏：设置筛选条件
@@ -26,40 +31,58 @@ min_launcher = st.sidebar.number_input("LauncherNum 最小值", value=0)
 max_launcher = st.sidebar.number_input("LauncherNum 最大值", value=100)
 
 # ==========================================
-# 2. 全能读取函数
+# 2. 全能读取函数 (含幽灵索引清洗)
 # ==========================================
 def super_reader(file):
-    """尝试多种方式读取 Excel 或 CSV"""
-    # 策略 1: Excel
+    """
+    尝试多种方式读取 Excel 或 CSV，并清洗数据。
+    """
+    df = None
+    
+    # --- A. 尝试读取 Excel ---
     try:
+        # 读取所有 sheet
         all_sheets = pd.read_excel(file, sheet_name=None)
-        best_df = pd.DataFrame()
+        # 寻找行数最多的 sheet 作为主数据
         max_rows = 0
         for name, sheet_df in all_sheets.items():
             if len(sheet_df) > max_rows:
                 max_rows = len(sheet_df)
-                best_df = sheet_df
-        if not best_df.empty:
-            return best_df
+                df = sheet_df
     except:
         pass
     
-    # 策略 2: CSV (尝试不同编码和容错)
-    methods = [
-        (pd.read_csv, {}),
-        (pd.read_csv, {'encoding': 'gbk'}),
-        (pd.read_csv, {'on_bad_lines': 'skip'}),
-    ]
-    
-    for reader, kwargs in methods:
-        file.seek(0)
-        try:
-            df = reader(file, **kwargs)
-            if not df.empty: return df
-        except:
-            continue
+    # --- B. 尝试读取 CSV (如果 Excel 失败) ---
+    if df is None:
+        methods = [
+            (pd.read_csv, {}),
+            (pd.read_csv, {'encoding': 'utf-8'}),
+            (pd.read_csv, {'encoding': 'gbk'}),
+            (pd.read_csv, {'on_bad_lines': 'skip'}),
+        ]
+        
+        for reader, kwargs in methods:
+            file.seek(0)
+            try:
+                temp_df = reader(file, **kwargs)
+                if not temp_df.empty: 
+                    df = temp_df
+                    break
+            except:
+                continue
+
+    # --- C. 数据清洗 (关键步骤) ---
+    if df is not None and not df.empty:
+        # 1. 清洗列名：转字符串并去除首尾空格
+        df.columns = df.columns.astype(str).str.strip()
+        
+        # 2. 【核心修复】删除幽灵索引列
+        # 删除所有包含 "Unnamed" 字样的列 (通常是 pandas 保存 index=True 产生的)
+        cols_to_drop = [c for c in df.columns if 'Unnamed' in c]
+        if cols_to_drop:
+            df.drop(columns=cols_to_drop, inplace=True)
             
-    return None
+    return df
 
 # ==========================================
 # 3. 主界面逻辑
@@ -74,99 +97,20 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     all_data_frames = []
     
-    # 显示处理进度
+    # --- 阶段一：读取与预处理 ---
     with st.spinner(f"正在读取并预处理 {len(uploaded_files)} 个文件..."):
         for file in uploaded_files:
-            # 读取
             df = super_reader(file)
             
             if df is not None and not df.empty:
                 try:
-                    # 清洗列名
-                    df.columns = df.columns.astype(str).str.strip()
-                    
-                    # 检查必要列
+                    # 检查必要列是否存在
                     if 'Amount' in df.columns and 'LauncherNum' in df.columns:
-                        # 计算 Times
+                        # 计算 Times 列
                         df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0)
                         df['Times'] = (df['Amount'] + 10000) / 10000
                         all_data_frames.append(df)
+                    else:
+                        st.warning(f"跳过文件 {file.name}: 缺少 Amount 或 LauncherNum 列")
                 except Exception as e:
-                    st.error(f"处理文件 {file.name} 时出错: {e}")
-
-    if all_data_frames:
-        # 合并所有数据用于统计
-        master_df = pd.concat(all_data_frames, ignore_index=True)
-        
-        # ==========================================
-        # 统计信息模块 (Statistics)
-        # ==========================================
-        st.markdown("### 📈 数据全貌统计")
-        st.info("这里展示的是**所有上传文件**合并后的原始数据统计，供您参考以设置筛选条件。")
-        
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
-        stat_col1.metric("📦 总数据行数", f"{len(master_df):,} 行")
-        
-        t_min_val = master_df['Times'].min()
-        t_max_val = master_df['Times'].max()
-        stat_col2.metric("✖️ Times (倍数) 范围", f"{t_min_val:.2f} ~ {t_max_val:.2f}")
-        
-        l_min_val = master_df['LauncherNum'].min()
-        l_max_val = master_df['LauncherNum'].max()
-        stat_col3.metric("🚀 LauncherNum (发射) 范围", f"{l_min_val} ~ {l_max_val}")
-        
-        st.divider()
-
-        # ==========================================
-        # 筛选与导出模块
-        # ==========================================
-        st.markdown("### 🔍 数据筛选与生成")
-        
-        if st.button("👉 按左侧条件开始筛选并导出", type="primary"):
-            
-            # 1. 执行筛选
-            filtered_df = master_df[
-                (master_df['Times'] >= min_times) & 
-                (master_df['Times'] <= max_times) & 
-                (master_df['LauncherNum'] >= min_launcher) & 
-                (master_df['LauncherNum'] <= max_launcher)
-            ].copy() # copy很重要，避免SettingWithCopyWarning
-            
-            if not filtered_df.empty:
-                # 2. 调整列顺序 (Times 放在 Amount 后面)
-                cols = list(filtered_df.columns)
-                if 'Times' in cols and 'Amount' in cols:
-                    cols.remove('Times')
-                    amount_idx = cols.index('Amount')
-                    cols.insert(amount_idx + 1, 'Times')
-                    filtered_df = filtered_df[cols]
-
-                # ==========================================
-                # 【新增功能】 MD5 和 ID 生成
-                # ==========================================
-                with st.spinner('正在生成 MD5 和 Batch ID...'):
-                    # A. 生成 MD5 (对全行内容)
-                    def calculate_md5(row):
-                        row_str = "".join(row.astype(str).values)
-                        return hashlib.md5(row_str.encode('utf-8')).hexdigest()
-                    
-                    md5_series = filtered_df.apply(calculate_md5, axis=1)
-
-                    # B. 生成 Batch_ID (平均值法)
-                    # 逻辑：((Min + Max) / 2) * 100 格式化为6位 + 行号6位
-                    avg_val = (min_times + max_times) / 2
-                    prefix_int = int(round(avg_val * 100))
-                    prefix_str = str(prefix_int).zfill(6)
-                    
-                    # 生成 ID 列表
-                    ids = []
-                    WIDTH_INDEX = 6
-                    # 重置 index 以便于生成连续流水号，但不改变原始数据顺序
-                    for i in range(len(filtered_df)):
-                        idx_str = str(i + 1).zfill(WIDTH_INDEX)
-                        full_id = f"{prefix_str}{idx_str}"
-                        ids.append(full_id)
-
-                    # 插入新列到最前面
-                    filtered_df.insert(0, 'Batch_ID', ids)
-                    filtered_df
+                    st.error(f"处理文件 {file.name} 时
