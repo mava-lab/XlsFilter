@@ -2,36 +2,38 @@ import streamlit as st
 import pandas as pd
 import io
 import hashlib
-import zipfile  # 新增：用于打包多个文件
+import zipfile
 
 # ==========================================
 # 配置信息
 # ==========================================
 APP_TITLE = "Zuma 表格筛选工具"
-APP_VERSION = "v2.0 (Batch Process)"
+APP_VERSION = "v2.1 (Boundary Fixed)"
 BUILD_DATE = "2026-01-12"
 
 st.set_page_config(page_title=f"{APP_TITLE} {APP_VERSION}", layout="wide")
-st.title(f"📊 {APP_TITLE} (批量拆分版)")
+st.title(f"📊 {APP_TITLE} (精准分段版)")
 st.caption(f"Version: {APP_VERSION} | Build: {BUILD_DATE}")
 
 # ==========================================
-# 0. Session State 初始化 (用于管理多组筛选条件)
+# 0. Session State 初始化
 # ==========================================
 if 'filter_rules' not in st.session_state:
     # 默认初始化一组规则
+    # 提示：为了包含0，默认最小值设为 -1.0
     st.session_state.filter_rules = [
-        {"id": 1, "min_t": 0.0, "max_t": 1000.0, "min_l": 0, "max_l": 100}
+        {"id": 1, "min_t": -1.0, "max_t": 10.0, "min_l": -1, "max_l": 100}
     ]
 
-# 辅助函数：添加新规则
 def add_rule():
     new_id = len(st.session_state.filter_rules) + 1
+    # 新规则默认承接上一条的 max (方便用户连续分段)
+    last_rule = st.session_state.filter_rules[-1]
     st.session_state.filter_rules.append(
-        {"id": new_id, "min_t": 0.0, "max_t": 100.0, "min_l": 0, "max_l": 100}
+        {"id": new_id, "min_t": last_rule['max_t'], "max_t": last_rule['max_t'] + 10.0, 
+         "min_l": -1, "max_l": 100}
     )
 
-# 辅助函数：删除最后一条规则
 def remove_rule():
     if len(st.session_state.filter_rules) > 1:
         st.session_state.filter_rules.pop()
@@ -40,7 +42,7 @@ def remove_rule():
 # 1. 侧边栏：批量筛选配置
 # ==========================================
 st.sidebar.header("1. 批量筛选配置")
-st.sidebar.info("💡 你可以添加多组条件，程序将一次性拆分出对应的多个文件。")
+st.sidebar.info("💡 逻辑调整：下限为 > (不含)，上限为 <= (含)。\n如需包含 0，请将最小值设为 -1。")
 
 # 规则管理按钮
 col_btn1, col_btn2 = st.sidebar.columns(2)
@@ -49,18 +51,19 @@ col_btn2.button("➖ 删除最后一条", on_click=remove_rule)
 
 st.sidebar.markdown("---")
 
-# 动态渲染所有规则的输入框
-# 注意：在循环中生成组件必须指定唯一的 key
+# 动态渲染所有规则
 for i, rule in enumerate(st.session_state.filter_rules):
     idx = i + 1
     with st.sidebar.expander(f"📂 文件 {idx} 配置 (Rule {idx})", expanded=True):
+        st.markdown(f"**区间逻辑：({rule['min_t']} < Times ≤ {rule['max_t']}]**")
+        
         c1, c2 = st.columns(2)
-        rule['min_t'] = c1.number_input(f"Times Min", value=rule['min_t'], step=0.1, key=f"t_min_{idx}")
-        rule['max_t'] = c2.number_input(f"Times Max", value=rule['max_t'], step=0.1, key=f"t_max_{idx}")
+        rule['min_t'] = c1.number_input(f"Times > (Min)", value=float(rule['min_t']), step=0.1, key=f"t_min_{idx}")
+        rule['max_t'] = c2.number_input(f"Times ≤ (Max)", value=float(rule['max_t']), step=0.1, key=f"t_max_{idx}")
         
         c3, c4 = st.columns(2)
-        rule['min_l'] = c3.number_input(f"Launch Min", value=rule['min_l'], step=1, key=f"l_min_{idx}")
-        rule['max_l'] = c4.number_input(f"Launch Max", value=rule['max_l'], step=1, key=f"l_max_{idx}")
+        rule['min_l'] = c3.number_input(f"Launch > (Min)", value=int(rule['min_l']), step=1, key=f"l_min_{idx}")
+        rule['max_l'] = c4.number_input(f"Launch ≤ (Max)", value=int(rule['max_l']), step=1, key=f"l_max_{idx}")
 
 # ==========================================
 # 2. 核心逻辑：读取与处理 (带缓存 + 清洗)
@@ -141,30 +144,27 @@ if uploaded_files:
         st.divider()
 
         # --- 批量处理逻辑 ---
-        st.markdown(f"### 🚀 批量拆分处理 (当前共 {len(st.session_state.filter_rules)} 个任务)")
+        st.markdown(f"### 🚀 批量拆分处理 (共 {len(st.session_state.filter_rules)} 个任务)")
         
         if st.button("👉 开始批量拆分并打包下载", type="primary"):
             
-            results_buffer = io.BytesIO() # 用于存放 ZIP 文件的内存
-            processed_logs = [] # 用于记录处理结果日志
+            results_buffer = io.BytesIO()
+            processed_logs = []
             total_files_generated = 0
 
-            # 创建 ZIP 文件
             with zipfile.ZipFile(results_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                
                 progress_bar = st.progress(0)
                 
-                # 遍历所有规则
                 for i, rule in enumerate(st.session_state.filter_rules):
                     idx = i + 1
                     t_min, t_max = rule['min_t'], rule['max_t']
                     l_min, l_max = rule['min_l'], rule['max_l']
                     
-                    # 1. 筛选
+                    # 1. 筛选 (核心修改：> Min, <= Max)
                     filtered_df = master_df[
-                        (master_df['Times'] >= t_min) & 
+                        (master_df['Times'] > t_min) & 
                         (master_df['Times'] <= t_max) & 
-                        (master_df['LauncherNum'] >= l_min) & 
+                        (master_df['LauncherNum'] > l_min) & 
                         (master_df['LauncherNum'] <= l_max)
                     ].copy()
                     
@@ -176,10 +176,11 @@ if uploaded_files:
                             lambda row: hashlib.md5("".join(row.astype(str).values).encode('utf-8')).hexdigest(), axis=1
                         )
 
-                        # 3. 生成 Batch_ID (基于当前规则的 Min/Max)
+                        # 3. 生成 Batch_ID
                         avg_val = (t_min + t_max) / 2
                         prefix_str = str(int(round(avg_val * 100))).zfill(6)
-                        filtered_df['Batch_ID'] = [f"{prefix_str}{str(k+1).zfill(6)}" for k in range(len(filtered_df))]
+                        WIDTH_INDEX = 6
+                        filtered_df['Batch_ID'] = [f"{prefix_str}{str(k+1).zfill(WIDTH_INDEX)}" for k in range(len(filtered_df))]
 
                         # 4. 列重排
                         cols = list(filtered_df.columns)
@@ -205,19 +206,16 @@ if uploaded_files:
             # 结果展示
             if total_files_generated > 0:
                 st.success(f"🎉 处理完成！共生成 {total_files_generated} 个文件。")
-                
-                # 展示日志表格
                 st.table(pd.DataFrame(processed_logs))
                 
-                # 提供 ZIP 下载
                 st.download_button(
-                    label="📦 点击下载所有文件 (ZIP压缩包)",
+                    label="📦 点击下载所有文件 (ZIP)",
                     data=results_buffer.getvalue(),
                     file_name=f"Batch_Processed_{BUILD_DATE}.zip",
                     mime="application/zip"
                 )
             else:
-                st.error("所有筛选条件的筛选结果均为空，未生成任何文件。")
+                st.error("所有筛选结果为空。请检查 Min 是否设置得太高 (注意 Min 是 > 不含)。")
                 st.table(pd.DataFrame(processed_logs))
 
     else:
